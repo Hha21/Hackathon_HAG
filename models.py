@@ -6,21 +6,15 @@ Allows swapping backends (local vLLM, OpenAI, etc.) by changing config.
 import json
 import time
 from openai import OpenAI
-from config import BACKEND, VLLM_BASE_URL, TEMPERATURE, MAX_NEW_TOKENS
+from config import VLLM_BASE_URL, TEMPERATURE, MAX_NEW_TOKENS
 
 
 def get_client(base_url: str = None) -> OpenAI:
-    """Return an OpenAI-compatible client pointing at vLLM or OpenAI."""
-    if BACKEND == "vllm":
-        return OpenAI(
-            base_url=base_url or VLLM_BASE_URL,
-            api_key="not-needed",  # vLLM doesn't require a real key
-        )
-    elif BACKEND == "openai":
-        import os
-        return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    else:
-        raise ValueError(f"Unknown backend: {BACKEND}")
+    """Return an OpenAI-compatible client pointing at a vLLM server."""
+    return OpenAI(
+        base_url=base_url or VLLM_BASE_URL,
+        api_key="not-needed",  # vLLM doesn't require a real key
+    )
 
 
 def query_model(

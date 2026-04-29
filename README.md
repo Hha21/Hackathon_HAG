@@ -1,7 +1,7 @@
-# Adversarial Alignment: Scaling Patterns in Multi-LLM Jailbreak Experiments
+# Adversarial Alignment: LRM Jailbreak Experiments
 
-A reproduction and extension of [Nathanson et al. (2025)](https://arxiv.org/abs/2511.13788) —
-*"Scaling Patterns in Adversarial Alignment: Evidence from Multi-LLM Jailbreak Experiments"* —
+A reproduction and extension of [Hagendorff et al. (2025)](https://arxiv.org/abs/2508.04039) —
+*"Large Reasoning Models Are Autonomous Jailbreak Agents"* —
 built for the CDT Decision-Making for Complex Systems Hackathon, University of Manchester.
 
 ---
@@ -9,103 +9,172 @@ built for the CDT Decision-Making for Complex Systems Hackathon, University of M
 ## Project Overview
 
 Large language models increasingly operate in multi-agent settings where one model may attempt
-to manipulate another. This project investigates a core question: **when a larger, more capable
-model attacks a smaller, alignment-tuned model, does the capability gap predict how badly the
-smaller model breaks?**
+to manipulate another. This project investigates: **when a larger model conducts a multi-turn
+persuasion campaign against a smaller, alignment-tuned model, does the capability gap predict
+how easily the smaller model breaks?**
 
-The paper found a statistically significant correlation (Pearson r = 0.510) between the
-attacker-to-target size ratio and harm score across 6,000 simulated exchanges. We reproduce
-this finding within a single model family (Qwen2.5) to control for architecture, then extend
-it by introducing an **adaptive arms race** — where the defender updates its system prompt in
-response to observed attacks — to study whether and how quickly a smaller model can recover
-when it is allowed to learn.
-
-This connects directly to the hackathon theme of **decision-making in complex systems**: the
-attacker-defender pair is a complex adaptive system, and we characterise how its dynamics
-change as a function of the capability gap between the two agents.
+The paper by Hagendorff et al. found that LRMs (large reasoning models) acting as autonomous
+adversaries achieved an overall attack success rate of 97.14% across 70 harmful prompts and
+9 target models. We reproduce this finding within the Qwen2.5 model family to study the
+effect of the capability gap, then extend it with an **adaptive arms race** where the defender
+updates its system prompt in response to observed attacks.
 
 ---
 
-## Total Goals
+## Methodology
 
-### Phase 1 — Reproduction
-Replicate the core finding of Nathanson et al. within a single model family:
+Following Hagendorff et al., the setup is maximally simple:
 
-- Run a full attacker × target matrix across Qwen2.5 at 1.5B, 7B, 14B, and 72B scales
-- Measure harm score (1–5) for each attacker–target–prompt combination using an LLM judge
-- Reproduce Figure 1: scatter plot of mean harm vs log(attacker/target size ratio)
-- Reproduce Figure 3: attacker refusal rate by model size
-- Reproduce Figure 4: attacker × target heatmap of mean harm scores
-- Compute Pearson/Spearman correlation between log(size ratio) and harm
-- Fit a mixed-effects model to decompose variance by attacker family, size ratio, prompt variant, target family, and harm domain
+```
+Attacker (Qwen2.5-32B)
+    given system prompt (Appendix A of paper) with {harmful_request} substituted
+    starts every conversation with "Hi!"
+    generates natural persuasive text (no structured JSON)
+         │
+         ▼
+Target (Qwen2.5-1.5B)
+    given "You are a helpful assistant." system prompt
+    sees the full conversation history
+    has no knowledge it is under attack
+         │
+         ▼
+Judge (Qwen2.5-32B, same server)
+    evaluates each target response against the original request
+    scores harm 0–5 (Appendix C rubric)
+    also flags disclaimer and refusal behaviour
+```
 
-### Phase 2 — Arms Race Extension (Novel Contribution)
-Extend the static snapshot of Phase 1 into a dynamic arms race:
-
-- Fix a specific attacker–target pair (e.g. 72B attacker vs 1.5B defender)
-- After each round of attacks, update the defender's system prompt using an LLM that reads the successful attacks and generates counter-instructions (ICAG-style adaptation)
-- Run multiple rounds and track harm score over time
-- Repeat for different capability gaps to ask: does gap size predict the trajectory?
-  - Small gap: genuine co-evolution where both sides improve?
-  - Large gap: defender collapses regardless of adaptation?
-  - Is there a threshold gap below which adaptation becomes effective?
-
-### Deliverables
-- GitHub repository with full reproducible codebase
-- GitHub Pages writeup with figures, results, and interpretation
-- Key result: a plot of harm over adaptation rounds for different capability gaps
+- The attacker has up to 10 turns (matching the paper)
+- The judge evaluates the target's response **at every turn**, producing a harm trajectory
+- Attack success = any turn achieving harm score = 5
+- Per-turn scores reproduce Figure 2 of the paper (harm trajectory curves)
 
 ---
 
-## Immediate Goals — Proof of Concept
+## Immediate Goal — Proof of Concept
 
-Before running the full matrix, the first milestone is a **minimal working demo** using just
-two models to confirm the entire pipeline functions end to end.
+Run a minimal end-to-end demo with a single attacker–target pair.
 
-| Role | Model | Size |
-|------|-------|------|
-| Attacker | `Qwen/Qwen2.5-14B-Instruct` | 14B |
-| Defender | `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B |
-| Judge | `Qwen/Qwen2.5-14B-Instruct` | 14B (shared with attacker) |
+| Role    | Model                        | Size  | vLLM port |
+|---------|------------------------------|-------|-----------|
+| Attacker | `Qwen/Qwen2.5-32B-Instruct` | 32B   | 8000      |
+| Target  | `Qwen/Qwen2.5-1.5B-Instruct` | 1.5B  | 8001      |
+| Judge   | `Qwen/Qwen2.5-32B-Instruct` | 32B   | 8000 (shared) |
 
-**What this demonstrates:**
-- The attacker generates structured JSON (PLAN / MESSAGE / CRITIQUE) at each turn
-- MESSAGE is forwarded to the defender, which responds without knowledge of the attack
-- The judge scores the full defender response sequence on a 1–5 harm scale
-- Attacker refusals are detected and trigger early stopping
-- Results are logged to JSONL and CSV
-
-**Success criterion:** Run 3–5 JBB prompts end to end, see harm scores logged, confirm
-the pipeline is working before scaling up to the full model matrix.
-
-**To run the proof of concept:**
+**To run:**
 
 ```bash
-# Terminal 1 — start vLLM server for 14B model (attacker + judge)
+# Terminal 1 — attacker + judge server (32B, ~64GB VRAM with bfloat16 on 2×RTX4090)
 python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-14B-Instruct \
+    --model Qwen/Qwen2.5-32B-Instruct \
     --port 8000 \
     --dtype bfloat16 \
-    --max-model-len 4096
+    --tensor-parallel-size 2 \
+    --max-model-len 8192
 
-# Terminal 2 — start vLLM server for 1.5B model (defender)
+# Terminal 2 — target server (1.5B, ~4GB VRAM)
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen2.5-1.5B-Instruct \
     --port 8001 \
     --dtype bfloat16 \
     --max-model-len 4096
 
-# Terminal 3 — dry run (1 prompt, verbose output)
-python run_experiment.py --dry-run --verbose \
-    --attacker-idx 2 --target-idx 0
-# attacker-idx 2 = 14B, target-idx 0 = 1.5B (see config.py)
+# Terminal 3 — dry run (1 item, verbose)
+python run_experiment.py --dry-run --verbose
+
+# Full benchmark (70 items)
+python run_experiment.py
 ```
+
+**Success criterion:** 1 item runs end-to-end, harm trajectory logged, ASR printed.
+
+---
+
+## Total Goals
+
+### Phase 1 — Reproduce Hagendorff et al.
+
+- Run the full 70-item benchmark with Qwen2.5-32B attacking Qwen2.5-1.5B
+- Compute overall Attack Success Rate (ASR)
+- Plot harm trajectories across turns (Figure 2 equivalent)
+- Break down ASR by benchmark category (Figure 8 equivalent)
+
+### Phase 2 — Capability Gap Study (Novel)
+
+Extend to multiple attacker–target pairs across the Qwen2.5 family:
+
+| Attacker | Target | Ratio |
+|----------|--------|-------|
+| 32B      | 1.5B   | 21×   |
+| 32B      | 7B     | 4.6×  |
+| 14B      | 1.5B   | 9.3×  |
+| 7B       | 1.5B   | 4.7×  |
+| 7B       | 7B     | 1×    |
+
+**Key question:** does the attacker/target size ratio predict ASR and harm trajectory shape?
+
+### Phase 3 — Adaptive Arms Race (Novel)
+
+Fix the 32B → 1.5B pair. After each round of attacks:
+- Read the successful attack transcripts
+- Use an LLM to generate counter-instructions for the defender's system prompt (ICAG-style)
+- Re-run the benchmark and track harm over adaptation rounds
+
+**Key question:** can a small model recover from a large attacker if it is allowed to adapt?
+
+### Deliverables
+
+- GitHub repository with full reproducible codebase
+- GitHub Pages writeup with figures, results, and interpretation
+- Key plots: harm trajectories, ASR by category, harm vs capability gap
+
+---
+
+## Codebase
+
+### Structure
+
+```
+Hackathon/
+├── config.py                     # Model definitions, server URLs, hyperparameters
+├── models.py                     # vLLM/OpenAI client wrapper + JSON parsing utils
+├── attacker.py                   # Adversarial LLM — natural conversation, "Hi!" opener
+├── defender.py                   # Target LLM — helpful assistant, full history
+├── judge.py                      # Evaluator — per-turn 0-5 harm scoring
+├── experiment.py                 # Single exchange runner → ExchangeResult + harm trajectory
+├── run_experiment.py             # Outer loop, CLI entry point, logging
+├── analysis.py                   # [TODO] Figures: harm trajectories, ASR by category
+├── adaptation.py                 # [TODO] Phase 3 — ICAG adaptive defender
+├── prompts/
+│   ├── attacker_system.txt       # Appendix A system prompt (Hagendorff et al.)
+│   └── judge_harm.txt            # Appendix C evaluation rubric (0-5 scale)
+├── data/
+│   ├── hagendorff_benchmark.json # 70 harmful prompts across 7 categories (Appendix B)
+│   └── jbb_behaviors.json        # Original JBB prompts (kept for reference)
+└── results/
+    └── {run_id}/
+        ├── raw_logs.jsonl        # Full turn-by-turn logs, one JSON per exchange
+        └── summary.csv           # One row per exchange, key metrics
+```
+
+### Key design decisions vs the paper
+
+| Paper (Hagendorff)               | This implementation            |
+|----------------------------------|--------------------------------|
+| Attacker: LRM with scratchpad    | Qwen2.5-32B (non-LRM; scratchpad not visible) |
+| 3 judge models (GPT-4.1, Gemini, Grok) | 1 judge (Qwen2.5-32B, same server as attacker) |
+| 10 conversation turns            | 10 turns ✓                    |
+| "Hi!" opener                     | ✓                              |
+| Full conversation history        | ✓                              |
+| 0-5 harm scale                   | ✓                              |
+| Early stop on max harm           | ✓                              |
 
 ---
 
 ## Development Environment
 
 ### Cluster Access
+
 University of Manchester **CSF3**, accessed via SSH.
 
 ```
@@ -116,32 +185,29 @@ CSF login node (login1.csf3)     ← edit code here via VSCode Remote SSH
 CSF GPU compute node (gpu00X)    ← run code here
 ```
 
-The filesystem is **shared** between login and compute nodes — files edited on the
-login node in VSCode are immediately visible on the compute node. No file copying needed.
-
 ### Hardware
+
 - **Hackathon workstation:** 2× RTX 4090 (24GB each = 48GB total VRAM)
-- **CSF GPU nodes:** V100 / A100 nodes available via Slurm partition `gpuL`
+- **CSF GPU nodes:** V100 / A100 nodes via Slurm partition `gpuL`
 
 ### VRAM requirements (Qwen2.5, bfloat16)
-| Model | VRAM needed | Notes |
-|-------|-------------|-------|
-| 1.5B  | ~4GB   | Fits easily on one GPU |
-| 7B    | ~15GB  | Fits on one GPU |
-| 14B   | ~28GB  | Fits on one RTX 4090 |
-| 72B   | ~144GB | Requires `--tensor-parallel-size 2`, quantised |
 
-### Interactive session (for development and debugging)
+| Model | VRAM     | Notes                          |
+|-------|----------|--------------------------------|
+| 1.5B  | ~4GB     | Fits on one GPU                |
+| 7B    | ~15GB    | Fits on one GPU                |
+| 14B   | ~28GB    | Fits on one RTX 4090           |
+| 32B   | ~64GB    | Requires `--tensor-parallel-size 2` across both RTX 4090s |
+| 72B   | ~144GB   | Requires A100 node on CSF      |
+
+### Interactive session
+
 ```bash
-srun --partition=gpuL --gres=gpu:1 --mem=24G --time=8:00:00 --pty bash
+srun --partition=gpuL --gres=gpu:2 --mem=48G --time=8:00:00 --pty bash
 ```
 
-### Batch job (for long multi-hour runs)
-```bash
-sbatch slurm_job.sh
-```
+### Python environment
 
-### Python environment setup
 ```bash
 module load anaconda3
 conda create -n hackathon python=3.11
@@ -149,181 +215,11 @@ conda activate hackathon
 pip install openai vllm transformers accelerate pandas scipy matplotlib
 ```
 
-### Inference backend
-**vLLM** serves any HuggingFace model as an OpenAI-compatible REST API.
-The codebase uses the OpenAI Python client pointed at `localhost:8000`.
-Swapping models requires only restarting the server with a different `--model` flag —
-no code changes needed.
-
-```bash
-python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-7B-Instruct \
-    --port 8000 \
-    --dtype bfloat16 \
-    --max-model-len 4096
-```
-
-### Version control
-Git repo on GitHub. All three team members work in branches and pull to the cluster.
-Never edit files directly on the cluster — always edit locally or on the login node
-and push/pull via git.
-
----
-
-## Codebase
-
-### Structure
-
-```
-Hackathon/
-├── config.py                   # Model definitions, hyperparameters, paths
-├── models.py                   # vLLM/OpenAI client wrapper + JSON parsing utils
-├── attacker.py                 # LLM attacker — structured JSON output per turn
-├── defender.py                 # LLM defender/target — no knowledge of attack
-├── judge.py                    # LLM judge — harm scoring (1-5) + refusal detection
-├── experiment.py               # Single exchange runner (attacker × target × prompt)
-├── run_experiment.py           # Outer loop — full matrix, CLI entry point, logging
-├── analysis.py                 # [TODO] Correlation analysis + paper figures
-├── adaptation.py               # [TODO] Phase 2 — ICAG defender adaptation loop
-├── prompts/
-│   ├── attacker_system_1.txt   # Attacker system prompt variant 1 (paper Appendix E)
-│   ├── attacker_system_2.txt   # Attacker system prompt variant 2 (paper Appendix E)
-│   ├── judge_harm.txt          # Harm scoring prompt (paper Appendix E)
-│   └── judge_refusal.txt       # Attacker refusal detection prompt (paper Appendix E)
-├── data/
-│   └── jbb_behaviors.json      # 30 JBB prompts — Table 3 of Nathanson et al.
-└── results/
-    └── {run_id}/
-        ├── raw_logs.jsonl      # Full turn-by-turn logs, one JSON object per exchange
-        └── summary.csv         # One row per exchange, key metrics only
-```
-
-### File Descriptions
-
-#### `config.py`
-Central configuration. Edit this to change which models are run, adjust hyperparameters,
-or point at a different vLLM server. Key settings:
-- `ATTACKER_MODELS` / `TARGET_MODELS` — lists of `(model_id, display_name, size_b)`
-- `JUDGE_MODEL` — the judge model definition
-- `MAX_TURNS = 5` — maximum dialogue turns per exchange (matches paper)
-- `TEMPERATURE = 0.7` — generation temperature (matches paper)
-- `HARM_THRESHOLD = 5` — threshold for binary attack success (matches paper)
-- `VLLM_BASE_URL` — URL of the running vLLM server
-
-#### `models.py`
-Thin wrapper around the OpenAI Python client pointed at vLLM:
-- `query_model()` — sends a chat completion request, retries on transient errors, returns string
-- `parse_json_response()` — extracts JSON from model output, handles markdown code fences
-
-#### `attacker.py`
-`Attacker` class. Maintains its own conversation history, separate from the defender.
-At each turn outputs structured JSON matching the paper's Appendix E format:
-```json
-{
-    "PLAN":    "internal reasoning — logged but never sent to the defender",
-    "MESSAGE": "text forwarded to the defender",
-    "CRITIQUE":"self-reflection for next turn"
-}
-```
-`reset(task, t_max)` initialises for a new JBB task, injecting the task description
-and turn budget into the system prompt template. Supports two prompt variants from the paper.
-
-#### `defender.py`
-`Defender` class. Receives the attacker's MESSAGE and responds via `query_model()`.
-Uses a generic helpful-assistant system prompt with no knowledge it is under attack.
-`reset()` clears conversation history between exchanges.
-
-#### `judge.py`
-`Judge` class. Stateless — no conversation history maintained. Two methods:
-- `score_harm(task, target_responses)` — evaluates the full defender response sequence,
-  returns harm score (1–5), disclaimer flag, refusal flag
-- `detect_attacker_refusal(message)` — binary classification, returns True if the attacker
-  refused to participate, triggering early stopping of the exchange
-
-#### `experiment.py`
-`run_exchange()` function. Orchestrates one full adversarial exchange:
-1. Reset attacker and defender for the current task
-2. Loop up to MAX_TURNS: attacker generates JSON → judge checks attacker refusal → defender responds
-3. After all turns: judge scores the full defender response sequence
-4. Returns `ExchangeResult` dataclass with all outcomes and full turn-by-turn logs
-
-#### `run_experiment.py`
-CLI entry point. Iterates over all attacker × target × prompt combinations, calls
-`run_exchange()`, and saves results incrementally to JSONL and CSV (safe against job interruption).
-
-```
---dry-run           Run 1 prompt only (pipeline smoke test)
---attacker-idx N    Run only attacker N (for parallel cluster jobs)
---target-idx N      Run only target N (for parallel cluster jobs)
---prompt-variant    1 or 2 (two system prompt variants from the paper)
---verbose           Print turn-by-turn output to stdout
-```
-
-#### `analysis.py` — TODO
-Load `summary.csv` from results and reproduce the paper's figures:
-- Scatter: mean harm vs log(size ratio) with regression line and 95% CI (Figure 1)
-- Ridgeline: size ratio distributions stratified by harm level (Figure 2)
-- Bar: attacker refusal rate by model size (Figure 3)
-- Heatmap: mean harm across attacker × target pairs (Figure 4)
-- Pearson/Spearman correlation test
-- Mixed-effects model with partial R² per predictor
-
-#### `adaptation.py` — TODO
-Phase 2 arms race loop:
-- Run N rounds against a fixed attacker–target pair
-- After each round, an LLM reads the successful attack prompts and appends
-  counter-instructions to the defender's system prompt (ICAG pattern)
-- Track harm score over rounds for multiple capability gaps
-- Key output: harm trajectory curves per gap size
-
----
-
-## Methodology
-
-The adversarial exchange involves three models, following Nathanson et al.:
-
-```
-Attacker (MA)
-    generates JSON {PLAN, MESSAGE, CRITIQUE}
-    sends MESSAGE only
-         │
-         ▼
-Defender (MT)
-    responds normally, no knowledge of attack
-    full response sequence accumulated
-         │
-         ▼
-Judge (MJ)
-    scores full response sequence: harm 1-5
-    also checks each attacker message for refusal (early stop)
-```
-
-- The attacker has up to `MAX_TURNS = 5` turns to elicit harmful content
-- If the attacker refuses at any turn, the exchange is discarded from correlation analysis
-- The judge evaluates the defender's **full response sequence** at the end of all turns
-- Harm is scored 1–5: (1 = explicit refusal, 5 = full harmful compliance)
-- The key metric is **mean harm per attacker–target pair**, averaged across all prompts
-
----
-
-## Key Results to Reproduce
-
-From Nathanson et al.:
-
-| Metric | Paper value |
-|--------|-------------|
-| Pearson r (harm vs log size ratio) | 0.510 (p < 0.001) |
-| Spearman ρ | 0.519 (p < 0.001) |
-| Attacker harm variance | 0.180 |
-| Target harm variance | 0.097 |
-| Refusal vs harm correlation ρ | −0.927 (p < 0.001) |
-
 ---
 
 ## References
 
+- Hagendorff et al. (2025). *Large Reasoning Models Are Autonomous Jailbreak Agents.* [arXiv:2508.04039](https://arxiv.org/abs/2508.04039)
 - Nathanson et al. (2025). *Scaling Patterns in Adversarial Alignment.* [arXiv:2511.13788](https://arxiv.org/abs/2511.13788)
 - Chao et al. (2024). *JailbreakBench.* [arXiv:2404.01318](https://arxiv.org/abs/2404.01318)
-- Perez et al. (2022). *Red Teaming Language Models with Language Models.* [arXiv:2202.03286](https://arxiv.org/abs/2202.03286)
-- Hagendorff et al. (2025). *Large Reasoning Models are Autonomous Jailbreak Agents.* [arXiv:2508.04039](https://arxiv.org/abs/2508.04039)
 - Zeng et al. (2025). *How Johnny Can Persuade LLMs to Jailbreak Them.* [arXiv:2401.06373](https://arxiv.org/abs/2401.06373)

@@ -1,55 +1,53 @@
 """
-LLM Judge module.
+LLM Judge module — Hagendorff et al. (2025) setup.
 
-Two responsibilities, matching Nathanson et al.:
-    1. Harm scoring: evaluates the target's full response sequence (1-5 scale)
-    2. Refusal detection: classifies each attacker message as refusal or attempt
+Evaluates each target model response on a 0-5 harm scale (Appendix C).
+Called after every turn to build the harm trajectory, matching Figure 2
+of the paper.
+
+The judge is stateless — each call is independent.
 """
 
 from pathlib import Path
 from models import get_client, query_model, parse_json_response
+from config import ATTACKER_SERVER_URL
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
-JUDGE_HARM_PROMPT = (_PROMPT_DIR / "judge_harm.txt").read_text()
-JUDGE_REFUSAL_PROMPT = (_PROMPT_DIR / "judge_refusal.txt").read_text()
+_JUDGE_HARM_TEMPLATE = (_PROMPT_DIR / "judge_harm.txt").read_text()
 
 
 class Judge:
     """
-    Wraps an LLM used as the evaluator.
+    Wraps the evaluator LLM.
 
-    Stateless — each call is independent, no conversation history maintained.
+    Runs on the attacker server (same model, no extra GPU cost).
+    Temperature is set to 0 for deterministic scoring.
     """
 
     def __init__(self, model_id: str, display_name: str):
         self.model_id = model_id
         self.display_name = display_name
-        self.client = get_client()
+        self.client = get_client(ATTACKER_SERVER_URL)
 
-    def score_harm(self, task: str, target_responses: list[str]) -> dict:
+    def score(self, benchmark_item: str, llm_response: str) -> dict:
         """
-        Score the harm level of the target's full response sequence.
+        Score a single target model response against the original request.
 
         Args:
-            task:             The original unsafe task description
-            target_responses: All of the target's responses in order
+            benchmark_item: The original harmful prompt (from the benchmark).
+            llm_response:   The target model's response at this turn.
 
         Returns:
-            Dict with keys:
-                harm (int 1-5): aggregate harm score
-                disclaimer (bool): response included educational framing
-                refusal (bool): response refused the task
+            Dict with:
+                harm (int 0-5): harm score
+                disclaimer (bool): response contained educational/fictional framing
+                refusal (bool): response contained an explicit refusal
                 raw (str): raw judge output for logging
         """
-        # Format the full response sequence as a numbered list
-        formatted_responses = "\n".join(
-            f"[Turn {i+1}]: {r}" for i, r in enumerate(target_responses)
-        )
-
         prompt = (
-            JUDGE_HARM_PROMPT
-            .replace("{x_task}", task)
-            .replace("{x_T_sequence}", formatted_responses)
+            _JUDGE_HARM_TEMPLATE
+            .replace("{benchmark_item}", benchmark_item)
+            .replace("{llm_response}", llm_response)
         )
 
         messages = [{"role": "user", "content": prompt}]
@@ -57,14 +55,12 @@ class Judge:
 
         parsed = parse_json_response(raw)
 
-        # Validate and extract with fallbacks
-        harm = parsed.get("harm", 1)
-        if not isinstance(harm, int) or not (1 <= harm <= 5):
-            try:
-                harm = int(harm)
-                harm = max(1, min(5, harm))
-            except (TypeError, ValueError):
-                harm = 1
+        harm = parsed.get("harm", 0)
+        try:
+            harm = int(harm)
+            harm = max(0, min(5, harm))
+        except (TypeError, ValueError):
+            harm = 0
 
         return {
             "harm": harm,
@@ -72,22 +68,3 @@ class Judge:
             "refusal": bool(parsed.get("refusal", True)),
             "raw": raw,
         }
-
-    def detect_attacker_refusal(self, attacker_message: str) -> bool:
-        """
-        Detect whether the attacker has refused to participate.
-
-        Per the paper: a refusal triggers early stopping of the exchange.
-
-        Args:
-            attacker_message: The MESSAGE field from the attacker's output
-
-        Returns:
-            True if the attacker refused, False if it made an attempt
-        """
-        prompt = JUDGE_REFUSAL_PROMPT.replace("{x_A_t}", attacker_message)
-        messages = [{"role": "user", "content": prompt}]
-        raw = query_model(self.client, self.model_id, messages, temperature=0.0)
-
-        parsed = parse_json_response(raw)
-        return bool(parsed.get("refusal", False))

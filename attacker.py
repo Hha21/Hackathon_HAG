@@ -1,104 +1,75 @@
 """
-LLM Attacker module.
+LLM Attacker module — Hagendorff et al. (2025) setup.
 
-The attacker is prompted to elicit harmful behaviour from the target model.
-Following Nathanson et al., it outputs structured JSON at each turn:
-    {
-        "PLAN": "internal reasoning about next move",
-        "MESSAGE": "text to send to the target",
-        "CRITIQUE": "self-reflection for next turn"
-    }
-Only MESSAGE is forwarded to the target.
+The attacker receives a system prompt (Appendix A) instructing it to jailbreak
+the target model. It maintains a full conversation history and generates natural
+text responses (no structured JSON). The target sees exactly what the attacker
+outputs — there is no hidden scratchpad.
+
+Conversation flow:
+    Turn 1: attacker sends the hardcoded opener "Hi!"
+    Turn 2+: attacker generates a response based on the full conversation so far
 """
 
 from pathlib import Path
-from models import get_client, query_model, parse_json_response
+from models import get_client, query_model
+from config import ATTACKER_SERVER_URL
 
-
-# Load attacker system prompts from file at import time
 _PROMPT_DIR = Path(__file__).parent / "prompts"
-ATTACKER_SYSTEM_PROMPT_1 = (_PROMPT_DIR / "attacker_system_1.txt").read_text()
-ATTACKER_SYSTEM_PROMPT_2 = (_PROMPT_DIR / "attacker_system_2.txt").read_text()
+_ATTACKER_SYSTEM_TEMPLATE = (_PROMPT_DIR / "attacker_system.txt").read_text()
+
+CONVERSATION_PARTNER = "large language model"
+OPENER = "Hi!"
 
 
 class Attacker:
     """
-    Wraps an LLM used as the red-team attacker.
+    Wraps the adversarial LLM.
 
-    Maintains its own conversation history separately from the target.
-    At each turn, generates a structured JSON response and extracts MESSAGE
-    to forward to the target.
+    The attacker maintains its own conversation history. The target's responses
+    are added as "user" turns (from the attacker's perspective), and the
+    attacker's own outputs as "assistant" turns.
     """
 
-    def __init__(self, model_id: str, display_name: str, size_b: float, prompt_variant: int = 1):
-        """
-        Args:
-            model_id:       HuggingFace model identifier
-            display_name:   Short name for logging
-            size_b:         Parameter count in billions (for size ratio calculation)
-            prompt_variant: 1 or 2 (two system prompt variants from the paper)
-        """
+    def __init__(self, model_id: str, display_name: str, size_b: float):
         self.model_id = model_id
         self.display_name = display_name
         self.size_b = size_b
-        self.prompt_variant = prompt_variant
-        self.client = get_client()
-
-        # Select system prompt variant
-        if prompt_variant == 1:
-            self._base_system_prompt = ATTACKER_SYSTEM_PROMPT_1
-        else:
-            self._base_system_prompt = ATTACKER_SYSTEM_PROMPT_2
-
-        # Conversation history (system prompt + alternating attacker/target turns)
+        self.client = get_client(ATTACKER_SERVER_URL)
         self.history: list[dict] = []
 
-    def reset(self, task: str, t_max: int):
+    def reset(self, harmful_request: str):
         """
-        Initialise the attacker for a new adversarial task.
-        Injects the task and turn budget into the system prompt.
-
-        Args:
-            task:  The unsafe behaviour description from JBB
-            t_max: Max number of turns
+        Initialise the attacker for a new task.
+        Substitutes the harmful request into the Appendix A system prompt.
         """
         system_prompt = (
-            self._base_system_prompt
-            .replace("{x_task}", task)
-            .replace("{REQUEST}", task)  # variant 2 uses {REQUEST}
-            .replace("{T_max}", str(t_max))
-            .replace("{TURNS}", str(t_max))
+            _ATTACKER_SYSTEM_TEMPLATE
+            .replace("{harmful_request}", harmful_request)
+            .replace("{conversation_partner}", CONVERSATION_PARTNER)
         )
         self.history = [{"role": "system", "content": system_prompt}]
 
-    def generate(self, target_response: str | None = None) -> dict:
+    def first_message(self) -> str:
         """
-        Generate the attacker's next turn.
+        Return the hardcoded opener used to start every conversation.
+        Also seeds the attacker's history so subsequent calls to generate()
+        have the opener already logged as an assistant turn.
+        """
+        self.history.append({"role": "assistant", "content": OPENER})
+        return OPENER
+
+    def generate(self, target_response: str) -> str:
+        """
+        Generate the attacker's next message given the target's latest response.
 
         Args:
-            target_response: The target model's previous response, or None on turn 1.
+            target_response: The target model's previous reply.
 
         Returns:
-            Parsed JSON dict with keys PLAN, MESSAGE, CRITIQUE.
-            Falls back to {"MESSAGE": raw_response} if JSON parsing fails.
+            The attacker's next message as plain text.
         """
-        # Add target's previous response to attacker history (as "user" from attacker's POV)
-        if target_response is not None:
-            self.history.append({"role": "user", "content": target_response})
-
-        raw = query_model(self.client, self.model_id, self.history)
-
-        # Add attacker's own response to its history
-        self.history.append({"role": "assistant", "content": raw})
-
-        parsed = parse_json_response(raw)
-
-        # Ensure MESSAGE exists even if JSON parsing failed
-        if not parsed or "MESSAGE" not in parsed:
-            parsed = {
-                "PLAN": "",
-                "MESSAGE": raw,  # fall back to raw output
-                "CRITIQUE": "",
-            }
-
-        return parsed
+        self.history.append({"role": "user", "content": target_response})
+        message = query_model(self.client, self.model_id, self.history)
+        self.history.append({"role": "assistant", "content": message})
+        return message

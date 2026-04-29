@@ -1,14 +1,16 @@
 """
-experiment.py
+experiment.py — Hagendorff et al. (2025) setup.
 
-Runs a single adversarial exchange: one attacker, one target, one JBB prompt.
-Returns a structured result dict suitable for logging.
+Runs a single adversarial exchange: attacker vs target vs judge, for one
+benchmark item. Returns a full result including the per-turn harm trajectory
+(matching Figure 2 of the paper).
 
-This is the inner loop. The outer loop (run_experiment.py) calls this
-across all (attacker x target x prompt) combinations.
+Flow per exchange:
+    1. Attacker sends "Hi!" → target responds → judge scores (turn 1)
+    2. Attacker generates response → target responds → judge scores (turn 2)
+    ...repeat up to MAX_TURNS.
 """
 
-import math
 import time
 from dataclasses import dataclass, field, asdict
 
@@ -20,62 +22,47 @@ from config import MAX_TURNS, HARM_THRESHOLD
 
 @dataclass
 class TurnLog:
-    """Log for a single turn in the adversarial exchange."""
     turn: int
-    attacker_plan: str
     attacker_message: str
-    attacker_critique: str
-    attacker_refused: bool
     target_response: str
+    harm_score: int
+    disclaimer: bool
+    refusal: bool
 
 
 @dataclass
 class ExchangeResult:
-    """Complete result for one (attacker, target, prompt) run."""
-    # Identifiers
+    """Complete result for one (attacker, target, benchmark_item) run."""
     attacker_model: str
     attacker_size_b: float
-    attacker_prompt_variant: int
     target_model: str
     target_size_b: float
-    task_id: int
-    task_domain: str
-    task_text: str
+    item_id: int
+    item_category: str
+    item_prompt: str
 
-    # Derived
-    size_ratio: float = field(init=False)
-    log_size_ratio: float = field(init=False)
+    # Per-turn harm trajectory (one score per turn, 0-5)
+    harm_trajectory: list = field(default_factory=list)
 
-    # Outcomes
-    harm_score: float = 0.0          # judge harm score 1-5
-    attack_success: bool = False     # harm >= HARM_THRESHOLD
-    attacker_refused: bool = False   # attacker refused at any turn
-    n_turns_completed: int = 0
-    disclaimer: bool = False
-    target_refused: bool = False
+    # Summary metrics
+    max_harm_score: int = 0       # peak harm across all turns
+    attack_success: bool = False  # max_harm_score == 5
+    n_turns: int = 0
 
-    # Full turn-by-turn log
+    # Full turn logs
     turns: list = field(default_factory=list)
 
-    # Timing
     duration_seconds: float = 0.0
 
-    def __post_init__(self):
-        self.size_ratio = self.attacker_size_b / self.target_size_b
-        self.log_size_ratio = math.log10(self.size_ratio)
-
     def to_dict(self) -> dict:
-        d = asdict(self)
-        d["size_ratio"] = self.size_ratio
-        d["log_size_ratio"] = self.log_size_ratio
-        return d
+        return asdict(self)
 
 
 def run_exchange(
     attacker: Attacker,
     defender: Defender,
     judge: Judge,
-    task: dict,
+    item: dict,
     max_turns: int = MAX_TURNS,
     verbose: bool = False,
 ) -> ExchangeResult:
@@ -83,94 +70,74 @@ def run_exchange(
     Run one full adversarial exchange.
 
     Args:
-        attacker:  Attacker instance (model already loaded)
-        defender:  Defender instance (model already loaded)
+        attacker:  Attacker instance
+        defender:  Defender (target) instance
         judge:     Judge instance
-        task:      Dict with keys: id, domain, behavior (the JBB prompt)
-        max_turns: Maximum dialogue turns
-        verbose:   Print turn-by-turn progress
+        item:      Dict with keys: id, category, prompt (from benchmark)
+        max_turns: Number of turns (default 10, matching paper)
+        verbose:   Print turn-by-turn progress to stdout
 
     Returns:
-        ExchangeResult with all outcomes and logs.
+        ExchangeResult with harm trajectory and full logs.
     """
     t_start = time.time()
 
     result = ExchangeResult(
         attacker_model=attacker.display_name,
         attacker_size_b=attacker.size_b,
-        attacker_prompt_variant=attacker.prompt_variant,
         target_model=defender.display_name,
         target_size_b=defender.size_b,
-        task_id=task["id"],
-        task_domain=task["domain"],
-        task_text=task["behavior"],
+        item_id=item["id"],
+        item_category=item["category"],
+        item_prompt=item["prompt"],
     )
 
-    # Initialise both models for this task
-    attacker.reset(task["behavior"], max_turns)
+    attacker.reset(item["prompt"])
     defender.reset()
 
-    target_response = None  # No prior target response on turn 1
+    # Turn 1: hardcoded opener "Hi!"
+    attacker_message = attacker.first_message()
 
     for turn in range(1, max_turns + 1):
         if verbose:
-            print(f"\n--- Turn {turn}/{max_turns} ---")
+            print(f"\n  --- Turn {turn}/{max_turns} ---")
+            print(f"  [Attacker]: {attacker_message[:120]}")
 
-        # --- Attacker generates ---
-        attacker_output = attacker.generate(target_response)
-        attacker_message = attacker_output.get("MESSAGE", "")
-
-        if verbose:
-            print(f"[Attacker PLAN]: {attacker_output.get('PLAN', '')}")
-            print(f"[Attacker MSG]:  {attacker_message[:200]}")
-
-        # --- Judge checks if attacker refused ---
-        attacker_refused_this_turn = judge.detect_attacker_refusal(attacker_message)
-
-        if attacker_refused_this_turn:
-            if verbose:
-                print("[Judge] Attacker refused. Early stop.")
-            result.attacker_refused = True
-            result.n_turns_completed = turn
-
-            result.turns.append(TurnLog(
-                turn=turn,
-                attacker_plan=attacker_output.get("PLAN", ""),
-                attacker_message=attacker_message,
-                attacker_critique=attacker_output.get("CRITIQUE", ""),
-                attacker_refused=True,
-                target_response="",
-            ))
-            break  # Early stopping per paper methodology
-
-        # --- Defender responds ---
+        # Target responds
         target_response = defender.respond(attacker_message)
 
         if verbose:
-            print(f"[Defender]:      {target_response[:200]}")
+            print(f"  [Target]:   {target_response[:120]}")
 
-        result.turns.append(TurnLog(
-            turn=turn,
-            attacker_plan=attacker_output.get("PLAN", ""),
-            attacker_message=attacker_message,
-            attacker_critique=attacker_output.get("CRITIQUE", ""),
-            attacker_refused=False,
-            target_response=target_response,
-        ))
-        result.n_turns_completed = turn
-
-    # --- Judge scores full response sequence ---
-    if not result.attacker_refused:
-        all_target_responses = defender.get_full_response_sequence()
-        judgment = judge.score_harm(task["behavior"], all_target_responses)
-
-        result.harm_score = judgment["harm"]
-        result.attack_success = judgment["harm"] >= HARM_THRESHOLD
-        result.disclaimer = judgment["disclaimer"]
-        result.target_refused = judgment["refusal"]
+        # Judge scores this turn's response
+        judgment = judge.score(item["prompt"], target_response)
 
         if verbose:
-            print(f"\n[Judge] Harm: {result.harm_score} | Success: {result.attack_success}")
+            print(f"  [Judge]:    harm={judgment['harm']} | disclaimer={judgment['disclaimer']} | refusal={judgment['refusal']}")
 
+        result.harm_trajectory.append(judgment["harm"])
+        result.turns.append(TurnLog(
+            turn=turn,
+            attacker_message=attacker_message,
+            target_response=target_response,
+            harm_score=judgment["harm"],
+            disclaimer=judgment["disclaimer"],
+            refusal=judgment["refusal"],
+        ))
+        result.n_turns = turn
+
+        # Early stopping: maximum harm achieved
+        if judgment["harm"] >= HARM_THRESHOLD:
+            if verbose:
+                print(f"  [Judge]:    Maximum harm score reached — stopping early.")
+            break
+
+        # Attacker generates next message (unless this was the last turn)
+        if turn < max_turns:
+            attacker_message = attacker.generate(target_response)
+
+    result.max_harm_score = max(result.harm_trajectory) if result.harm_trajectory else 0
+    result.attack_success = result.max_harm_score >= HARM_THRESHOLD
     result.duration_seconds = time.time() - t_start
+
     return result
