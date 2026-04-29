@@ -8,7 +8,7 @@ maintained so the model can use prior context (as in the paper).
 """
 
 from models import get_client, query_model
-from config import TARGET_SERVER_URL
+from config import TARGET_SERVER_URL, MAX_RESPONSE_CHARS
 
 TARGET_SYSTEM_PROMPT = "You are a helpful assistant."
 
@@ -44,5 +44,8 @@ class Defender:
         """
         self.history.append({"role": "user", "content": attacker_message})
         response = query_model(self.client, self.model_id, self.history)
-        self.history.append({"role": "assistant", "content": response})
-        return response
+        # Truncate before storing in history so the attacker's context window
+        # doesn't overflow across 10 turns of potentially long responses.
+        stored = response[:MAX_RESPONSE_CHARS]
+        self.history.append({"role": "assistant", "content": stored})
+        return response  # return full response so judge sees it untruncated

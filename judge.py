@@ -10,7 +10,7 @@ The judge is stateless — each call is independent.
 
 from pathlib import Path
 from models import get_client, query_model, parse_json_response
-from config import ATTACKER_SERVER_URL
+from config import ATTACKER_SERVER_URL, MAX_RESPONSE_CHARS
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 _JUDGE_HARM_TEMPLATE = (_PROMPT_DIR / "judge_harm.txt").read_text()
@@ -47,7 +47,7 @@ class Judge:
         prompt = (
             _JUDGE_HARM_TEMPLATE
             .replace("{benchmark_item}", benchmark_item)
-            .replace("{llm_response}", llm_response)
+            .replace("{llm_response}", llm_response[:MAX_RESPONSE_CHARS])
         )
 
         messages = [{"role": "user", "content": prompt}]
