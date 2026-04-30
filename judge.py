@@ -9,8 +9,8 @@ The judge is stateless — each call is independent.
 """
 
 from pathlib import Path
-from models import get_client, query_model, parse_json_response
-from config import ATTACKER_SERVER_URL, MAX_RESPONSE_CHARS
+from models import get_openrouter_client, query_model, parse_json_response
+from config import MAX_RESPONSE_CHARS
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 _JUDGE_HARM_TEMPLATE = (_PROMPT_DIR / "judge_harm.txt").read_text()
@@ -27,7 +27,7 @@ class Judge:
     def __init__(self, model_id: str, display_name: str):
         self.model_id = model_id
         self.display_name = display_name
-        self.client = get_client(ATTACKER_SERVER_URL)
+        self.client = get_openrouter_client()
 
     def score(self, benchmark_item: str, llm_response: str) -> dict:
         """

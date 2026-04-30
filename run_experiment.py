@@ -50,6 +50,26 @@ def save_jsonl(record: dict, filepath: Path):
         f.write(json.dumps(record) + "\n")
 
 
+def save_transcript(result, filepath: Path):
+    """Append a human-readable conversation record to conversations.txt."""
+    SEP = "=" * 72
+    DIV = "─" * 72
+    status = "SUCCESS" if result.attack_success else "FAILED"
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(f"\n{SEP}\n")
+        f.write(f"Item #{result.item_id}  |  {result.item_category}\n")
+        f.write(f"Prompt  : {result.item_prompt}\n")
+        f.write(f"Attacker: {result.attacker_model}  |  Target: {result.target_model}\n")
+        f.write(f"Result  : {status}  |  max_harm={result.max_harm_score}/5  |  turns={result.n_turns}\n")
+        f.write(f"{SEP}\n")
+        for turn in result.turns:
+            f.write(f"\nTurn {turn.turn}\n{DIV}\n")
+            f.write(f"[ATTACKER]\n{turn.attacker_message}\n\n")
+            f.write(f"[TARGET]\n{turn.target_response}\n\n")
+            f.write(f"[JUDGE]  harm={turn.harm_score}  |  disclaimer={turn.disclaimer}  |  refusal={turn.refusal}\n")
+        f.write(f"\n{SEP}\n")
+
+
 def save_csv(records: list[dict], filepath: Path):
     if not records:
         return
@@ -77,17 +97,19 @@ def main():
 
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = get_run_dir(run_id)
-    raw_log_path = run_dir / "raw_logs.jsonl"
-    summary_path = run_dir / "summary.csv"
+    raw_log_path    = run_dir / "raw_logs.jsonl"
+    summary_path    = run_dir / "summary.csv"
+    transcript_path = run_dir / "conversations.txt"
 
     a_id, a_name, a_size = ATTACKER_MODEL
     t_id, t_name, t_size = TARGET_MODEL
     j_id, j_name, _      = JUDGE_MODEL
 
     print(f"Run: {run_id}")
-    print(f"Attacker : {a_name} ({a_size}B)  [port 8000]")
-    print(f"Target   : {t_name} ({t_size}B)  [port 8001]")
-    print(f"Judge    : {j_name}              [port 8000]")
+    a_size_str = f"{a_size}B" if a_size is not None else "API"
+    print(f"Attacker : {a_name} ({a_size_str})  [OpenRouter]")
+    print(f"Target   : {t_name} ({t_size}B)     [local vLLM port 8001]")
+    print(f"Judge    : {j_name} ({a_size_str})  [OpenRouter]")
     print(f"Turns    : {MAX_TURNS}")
     print(f"Items    : {len(items)}")
     print(f"Results  : {run_dir}\n")
@@ -113,6 +135,7 @@ def main():
         record = result.to_dict()
         all_results.append(record)
         save_jsonl(record, raw_log_path)
+        save_transcript(result, transcript_path)
 
         trajectory_str = " ".join(str(h) for h in result.harm_trajectory)
         status = "SUCCESS" if result.attack_success else "FAILED"
@@ -123,8 +146,9 @@ def main():
     n_success = sum(1 for r in all_results if r["attack_success"])
     asr = 100 * n_success / len(all_results) if all_results else 0.0
     print(f"\nDone. ASR = {n_success}/{len(all_results)} ({asr:.1f}%)")
-    print(f"Raw logs : {raw_log_path}")
-    print(f"Summary  : {summary_path}")
+    print(f"Raw logs    : {raw_log_path}")
+    print(f"Summary     : {summary_path}")
+    print(f"Transcripts : {transcript_path}")
 
 
 if __name__ == "__main__":

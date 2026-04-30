@@ -12,8 +12,7 @@ Conversation flow:
 """
 
 from pathlib import Path
-from models import get_client, query_model
-from config import ATTACKER_SERVER_URL
+from models import get_openrouter_client, query_model
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 _ATTACKER_SYSTEM_TEMPLATE = (_PROMPT_DIR / "attacker_system.txt").read_text()
@@ -35,7 +34,7 @@ class Attacker:
         self.model_id = model_id
         self.display_name = display_name
         self.size_b = size_b
-        self.client = get_client(ATTACKER_SERVER_URL)
+        self.client = get_openrouter_client()
         self.history: list[dict] = []
 
     def reset(self, harmful_request: str):
