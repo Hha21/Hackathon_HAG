@@ -107,8 +107,9 @@ def main():
 
     print(f"Run: {run_id}")
     a_size_str = f"{a_size}B" if a_size is not None else "API"
+    t_size_str = f"{t_size}B" if t_size is not None else "API"
     print(f"Attacker : {a_name} ({a_size_str})  [OpenRouter]")
-    print(f"Target   : {t_name} ({t_size}B)     [local vLLM port 8001]")
+    print(f"Target   : {t_name} ({t_size_str})  [OpenRouter]")
     print(f"Judge    : {j_name} ({a_size_str})  [OpenRouter]")
     print(f"Turns    : {MAX_TURNS}")
     print(f"Items    : {len(items)}")

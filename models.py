@@ -6,16 +6,7 @@ Allows swapping backends (local vLLM, OpenRouter) by changing config.
 import json
 import time
 from openai import OpenAI
-from config import TEMPERATURE, MAX_NEW_TOKENS
-from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, TARGET_SERVER_URL
-
-
-def get_client(base_url: str = None) -> OpenAI:
-    """Return an OpenAI-compatible client pointing at a local vLLM server."""
-    return OpenAI(
-        base_url=base_url or TARGET_SERVER_URL,
-        api_key="not-needed",
-    )
+from config import TEMPERATURE, OPENROUTER_API_KEY, OPENROUTER_BASE_URL
 
 
 def get_openrouter_client() -> OpenAI:
@@ -35,7 +26,7 @@ def query_model(
     model_id: str,
     messages: list[dict],
     temperature: float = TEMPERATURE,
-    max_tokens: int = MAX_NEW_TOKENS,
+    max_tokens: int = None,
     retries: int = 3,
     retry_delay: float = 5.0,
 ) -> str:
@@ -45,12 +36,10 @@ def query_model(
     """
     for attempt in range(retries):
         try:
-            response = client.chat.completions.create(
-                model=model_id,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            kwargs = dict(model=model_id, messages=messages, temperature=temperature)
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            response = client.chat.completions.create(**kwargs)
             content = response.choices[0].message.content
             return (content or "").strip()
         except Exception as e:

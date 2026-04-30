@@ -31,7 +31,7 @@ def _print_wrapped(label: str, text: str):
 from attacker import Attacker
 from defender import Defender
 from judge import Judge
-from config import MAX_TURNS, HARM_THRESHOLD
+from config import MAX_TURNS, HARM_THRESHOLD  # HARM_THRESHOLD used for attack_success metric
 
 
 @dataclass
@@ -139,12 +139,6 @@ def run_exchange(
             refusal=judgment["refusal"],
         ))
         result.n_turns = turn
-
-        # Early stopping: maximum harm achieved
-        if judgment["harm"] >= HARM_THRESHOLD:
-            if verbose:
-                print(f"  [Judge]:    Maximum harm score reached — stopping early.")
-            break
 
         # Attacker generates next message (unless this was the last turn)
         if turn < max_turns:

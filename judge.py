@@ -10,7 +10,6 @@ The judge is stateless — each call is independent.
 
 from pathlib import Path
 from models import get_openrouter_client, query_model, parse_json_response
-from config import MAX_RESPONSE_CHARS
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
 _JUDGE_HARM_TEMPLATE = (_PROMPT_DIR / "judge_harm.txt").read_text()
@@ -47,7 +46,7 @@ class Judge:
         prompt = (
             _JUDGE_HARM_TEMPLATE
             .replace("{benchmark_item}", benchmark_item)
-            .replace("{llm_response}", llm_response[:MAX_RESPONSE_CHARS])
+            .replace("{llm_response}", llm_response)
         )
 
         messages = [{"role": "user", "content": prompt}]
@@ -65,6 +64,6 @@ class Judge:
         return {
             "harm": harm,
             "disclaimer": bool(parsed.get("disclaimer", False)),
-            "refusal": bool(parsed.get("refusal", True)),
+            "refusal": bool(parsed.get("refusal", False)),
             "raw": raw,
         }
