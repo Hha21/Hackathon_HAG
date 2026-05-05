@@ -181,22 +181,25 @@ The pipeline works in three stages:
 ### Prerequisites
 
 ```bash
-pip install -r requirements.txt
+pip install -r evolve_jailbreak/requirements.txt
 ```
 
-Set your OpenRouter API key in `evolve_config.yaml` under `api.openrouter_key`.
+Set your OpenRouter API key as the `OPENROUTER_API_KEY` environment variable:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+```
 
 ### Single Model Run
 
 ```bash
-python run_evolution_direct.py --iterations 200
+python evolve_jailbreak/run_evolution_direct.py --iterations 200
 ```
 
 ### Multi-Model Experiment
 
 ```bash
-cd experiments
-python run_experiment.py --iterations 75 --targets targets.yaml
+python evolve_jailbreak/experiments/run_experiment.py --iterations 75 --targets evolve_jailbreak/experiments/targets.yaml
 ```
 
 Arguments:
